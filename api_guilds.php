@@ -1,4 +1,5 @@
 <?php
+ob_start();
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/functions.php';
 
@@ -15,7 +16,15 @@ if (!$token) {
     exit;
 }
 
-[$guilds, $err] = discordApiRequest($appConfig['discord_api_base'] . '/users/@me/guilds', $token);
+$limit = isset($_GET['limit']) ? min(100, (int)$_GET['limit']) : 25;
+$after = $_GET['after'] ?? null;
+
+$url = $appConfig['discord_api_base'] . '/users/@me/guilds?limit=' . $limit;
+if ($after) {
+    $url .= '&after=' . $after;
+}
+
+[$guilds, $err] = discordApiRequest($url, $token);
 
 if ($err) {
     http_response_code(502);
@@ -25,56 +34,16 @@ if ($err) {
 
 $result = [];
 
-// helper: perform parallel requests in batches using curl_multi
-function multiFetch(array $urls, string $token, int $batchSize = 6): array {
-    $out = [];
-    $chunks = array_chunk($urls, $batchSize, true);
-
-    foreach ($chunks as $chunk) {
-        $multi = curl_multi_init();
-        $handles = [];
-
-        foreach ($chunk as $key => $url) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_HTTPHEADER => ["Authorization: Bot $token", "Content-Type: application/json"],
-                CURLOPT_TIMEOUT => 10,
-            ]);
-            curl_multi_add_handle($multi, $ch);
-            $handles[(int)$ch] = ['handle' => $ch, 'key' => $key];
-        }
-
-        $running = null;
-        do {
-            curl_multi_exec($multi, $running);
-            curl_multi_select($multi, 0.5);
-        } while ($running > 0);
-
-        foreach ($handles as $h) {
-            $ch = $h['handle'];
-            $key = $h['key'];
-            $content = curl_multi_getcontent($ch);
-            $err = curl_error($ch);
-            if ($err) {
-                $out[$key] = ['error' => $err, 'body' => null];
-            } else {
-                $out[$key] = ['error' => null, 'body' => $content];
-            }
-            curl_multi_remove_handle($multi, $ch);
-            curl_close($ch);
-        }
-
-        curl_multi_close($multi);
-    }
-
-    return $out;
-}
-
 if (is_array($guilds)) {
     // prepare urls
     $detailUrls = [];
     $memberUrls = [];
+
+    // If it's the first page, we also fetch the application info for the total count
+    if (!$after) {
+        $detailUrls['__app_info'] = $appConfig['discord_api_base'] . '/applications/@me';
+    }
+
     foreach ($guilds as $g) {
         $id = $g['id'] ?? null;
         if (!$id) continue;
@@ -122,9 +91,33 @@ if (is_array($guilds)) {
 
 // sort by joined_at descending (newest first). Nulls go last.
 usort($result, function ($a, $b) {
-    $ta = isset($a['joined_at']) ? strtotime($a['joined_at']) : 0;
-    $tb = isset($b['joined_at']) ? strtotime($b['joined_at']) : 0;
+    $ta = !empty($a['joined_at']) ? strtotime($a['joined_at']) : 0;
+    $tb = !empty($b['joined_at']) ? strtotime($b['joined_at']) : 0;
+    
+    if ($ta === false) $ta = 0;
+    if ($tb === false) $tb = 0;
+
     return $tb <=> $ta;
 });
 
-echo json_encode(['guilds' => $result]);
+$discordLastId = (is_array($guilds) && !empty($guilds)) ? end($guilds)['id'] : null;
+$hasMore = (is_array($guilds) && count($guilds) === $limit);
+
+$totalCount = $_SESSION['bot_guild_count'] ?? null;
+if (isset($detailsRes['__app_info']) && $detailsRes['__app_info']['error'] === null) {
+    $decoded = json_decode($detailsRes['__app_info']['body'], true);
+    if (is_array($decoded) && isset($decoded['approximate_guild_count'])) {
+        $totalCount = $decoded['approximate_guild_count'];
+        $_SESSION['bot_guild_count'] = $totalCount;
+    }
+}
+
+if (ob_get_length()) ob_clean();
+header('Content-Type: application/json; charset=utf-8');
+echo json_encode([
+    'guilds' => $result,
+    'lastId' => $discordLastId,
+    'hasMore' => $hasMore,
+    'totalCount' => $totalCount
+], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+exit;

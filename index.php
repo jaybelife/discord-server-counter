@@ -16,43 +16,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($token === '') {
             $error = 'Bitte Token eingeben';
         } else {
-            [$bot, $error] = discordApiRequest($appConfig['discord_api_base'] . '/users/@me', $token);
+            // Fetch bot info and application info in parallel to save time
+            $results = multiFetch([
+                'bot' => $appConfig['discord_api_base'] . '/users/@me',
+                'app' => $appConfig['discord_api_base'] . '/applications/@me'
+            ], $token);
 
-            if (!$error && $bot) {
-                // persist token in session for async requests during this session
-                $_SESSION['bot_token'] = $token;
-                $_SESSION['bot_id'] = $bot['id'] ?? null;
+            $botRes = $results['bot'] ?? null;
+            $appRes = $results['app'] ?? null;
 
-                [$guilds, $error] = discordApiRequest($appConfig['discord_api_base'] . '/users/@me/guilds', $token);
+            if ($botRes && !$botRes['error']) {
+                $bot = json_decode($botRes['body'], true);
+                if ($bot && isset($bot['id'])) {
+                    $_SESSION['bot_token'] = $token;
+                    $_SESSION['bot_id'] = $bot['id'];
 
-                if (is_array($guilds)) {
-                    usort($guilds, fn($a, $b) => strcmp($a['name'] ?? '', $b['name'] ?? ''));
-
-                    // Fetch member counts for each guild (may trigger multiple API calls)
-                    foreach ($guilds as $idx => $g) {
-                        if (empty($g['id'])) continue;
-
-                        [$guildDetails, $detailError] = discordApiRequest(
-                            $appConfig['discord_api_base'] . '/guilds/' . $g['id'] . '?with_counts=true',
-                            $token
-                        );
-
-                        if (!$detailError && is_array($guildDetails)) {
-                            // approximate_member_count is returned when with_counts=true
-                            $guilds[$idx]['member_count'] = $guildDetails['approximate_member_count'] ?? $guildDetails['member_count'] ?? null;
-                        } else {
-                            $guilds[$idx]['member_count'] = null;
+                    if ($appRes && !$appRes['error']) {
+                        $app = json_decode($appRes['body'], true);
+                        if (isset($app['approximate_guild_count'])) {
+                            $_SESSION['bot_guild_count'] = $app['approximate_guild_count'];
                         }
                     }
                 } else {
-                    $guilds = [];
+                    $error = 'Ungültige Antwort von Discord';
                 }
+            } else {
+                $error = $botRes['error'] ?? 'Login fehlgeschlagen';
             }
         }
     }
 }
 
-$guildCount = count($guilds ?? []);
+$guildCount = $_SESSION['bot_guild_count'] ?? 0;
 ?>
 
 <!DOCTYPE html>
@@ -140,6 +135,9 @@ $guildCount = count($guilds ?? []);
                 <div id="guilds-section">
                     <div id="guilds-spinner" class="spinner" aria-hidden="false"></div>
                     <div class="item-list" id="guilds-list"></div>
+                    <div id="pagination-container" style="text-align: center; margin-top: 20px; display: none;">
+                        <button id="load-more-btn" class="copy-btn" style="width: auto; padding: 10px 20px;">Mehr laden</button>
+                    </div>
                 </div>
             </div>
 

@@ -51,6 +51,10 @@ Kein offizielles Discord Produkt.
 Made by .jaybelife  
 GitHub: https://github.com/jaybelife
 
+**Contributors:**
+- [Marco](https://github.com/Marco12223)
+
+
 ---
 
 ## 📄 License

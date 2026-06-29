@@ -35,6 +35,58 @@ function discordApiRequest(string $url, string $token): array
     return [$data, null];
 }
 
+/**
+ * Perform parallel requests in batches using curl_multi
+ */
+function multiFetch(array $urls, string $token, int $batchSize = 6): array
+{
+    $out = [];
+    $chunks = array_chunk($urls, $batchSize, true);
+
+    foreach ($chunks as $chunk) {
+        $multi = curl_multi_init();
+        $handles = [];
+
+        foreach ($chunk as $key => $url) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => [
+                    "Authorization: Bot $token",
+                    "Content-Type: application/json"
+                ],
+                CURLOPT_TIMEOUT => 10,
+            ]);
+            curl_multi_add_handle($multi, $ch);
+            $handles[(int)$ch] = ['handle' => $ch, 'key' => $key];
+        }
+
+        $running = null;
+        do {
+            curl_multi_exec($multi, $running);
+            curl_multi_select($multi, 0.5);
+        } while ($running > 0);
+
+        foreach ($handles as $h) {
+            $ch = $h['handle'];
+            $key = $h['key'];
+            $content = curl_multi_getcontent($ch);
+            $err = curl_error($ch);
+            if ($err) {
+                $out[$key] = ['error' => $err, 'body' => null];
+            } else {
+                $out[$key] = ['error' => null, 'body' => $content];
+            }
+            curl_multi_remove_handle($multi, $ch);
+            curl_close($ch);
+        }
+
+        curl_multi_close($multi);
+    }
+
+    return $out;
+}
+
 function getBotAvatarUrl(array $bot): string
 {
     if (!empty($bot['avatar'])) {
